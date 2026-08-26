@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_screen_gradient"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingBottom="30dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="20dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/btnBack"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_glass_card_light"
+                android:gravity="center"
+                android:text="←"
+                android:textColor="@color/text_primary"
+                android:textSize="18sp"/>
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="14dp"
+                android:layout_weight="1"
+                android:text="📊 Analytics"
+                android:textColor="@color/text_primary"
+                android:textSize="18sp"
+                android:textStyle="bold"/>
+
+        </LinearLayout>
+
+        <!-- Login trend chart -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Login Trend — Last 7 Days"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold"/>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <View
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_gravity="center_vertical"
+                    android:background="@drawable/dot_indicator"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="16dp"
+                    android:text="Success"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"/>
+
+                <View
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_gravity="center_vertical"
+                    android:background="@drawable/badge_danger"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Failed"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"/>
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/chartTrend"
+                android:layout_width="match_parent"
+                android:layout_height="160dp"
+                android:layout_marginTop="16dp"
+                android:orientation="horizontal"
+                android:gravity="bottom"
+                android:weightSum="7"/>
+
+        </LinearLayout>
+
+        <!-- Device distribution -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                android:text="Device Type Distribution"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold"/>
+
+            <LinearLayout
+                android:id="@+id/chartDevices"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"/>
+
+        </LinearLayout>
+
+        <!-- Summary metrics -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="20dp"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_glass_card"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/tvSuccessRate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0%"
+                    android:textColor="@color/status_safe"
+                    android:textSize="22sp"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="Success Rate"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp"/>
+
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_glass_card"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:id="@+id/tvSecurityEvents"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="@color/status_warning"
+                    android:textSize="22sp"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="Security Events"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp"/>
+
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</androidx.core.widget.NestedScrollView>
