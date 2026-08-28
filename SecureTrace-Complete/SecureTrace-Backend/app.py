@@ -12,6 +12,7 @@ from functools import wraps
 import jwt
 import psycopg2
 import psycopg2.extras
+import requests
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from flask import Flask, request, jsonify, g, send_file
@@ -91,8 +92,22 @@ def init_db():
             login_status TEXT,
             login_time TEXT,
             logout_time TEXT,
-            is_active INTEGER DEFAULT 0
+            is_active INTEGER DEFAULT 0,
+            approx_location TEXT
         )
+    """)
+
+    # Migration: add the column if this table already existed from before this feature
+    c.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='login_activity' AND column_name='approx_location'
+            ) THEN
+                ALTER TABLE login_activity ADD COLUMN approx_location TEXT;
+            END IF;
+        END $$;
     """)
 
     c.execute("""
@@ -227,6 +242,41 @@ def create_alert(db, user_id, alert_type, description):
     )
 
 
+def get_client_ip():
+    """Best-effort client IP, accounting for Render's reverse proxy."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or ""
+
+
+def get_approx_location(ip):
+    """
+    Resolves an IP address to a city-level location only (e.g. "Mumbai, IN").
+    Never resolves GPS coordinates or a precise address. Fails silently
+    (returns None) so a slow/unavailable geolocation service never blocks login.
+    """
+    if not ip or ip in ("127.0.0.1", "localhost", "::1"):
+        return None
+    try:
+        resp = requests.get(
+            f"http://ip-api.com/json/{ip}",
+            params={"fields": "status,city,country"},
+            timeout=3
+        )
+        data = resp.json()
+        if data.get("status") == "success":
+            city = data.get("city")
+            country = data.get("country")
+            if city and country:
+                return f"{city}, {country}"
+            return city or country
+    except Exception:
+        pass
+    return None
+
+
+
 def with_duration(row):
     """Adds a computed duration_minutes field to an activity row dict."""
     row = dict(row)
@@ -272,11 +322,15 @@ def build_activity_excel(rows, sheet_title="Activity"):
     ws = wb.active
     ws.title = sheet_title
 
+    include_location = any("approx_location" in r for r in rows)
+
     headers = [
         "ID", "Username", "Device Name", "Device Model", "Device Type",
         "Operating System", "App Version", "Status", "Login Time",
         "Logout Time", "Duration (minutes)"
     ]
+    if include_location:
+        headers.append("Approx. Location (from IP)")
     ws.append(headers)
 
     header_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
@@ -288,7 +342,7 @@ def build_activity_excel(rows, sheet_title="Activity"):
         cell.alignment = Alignment(horizontal="center")
 
     for r in rows:
-        ws.append([
+        row_values = [
             r.get("id"),
             r.get("username"),
             r.get("device_name"),
@@ -300,11 +354,15 @@ def build_activity_excel(rows, sheet_title="Activity"):
             r.get("login_time"),
             r.get("logout_time") or "",
             r.get("duration_minutes") if r.get("duration_minutes") is not None else "",
-        ])
+        ]
+        if include_location:
+            row_values.append(r.get("approx_location") or "")
+        ws.append(row_values)
 
-    widths = [6, 16, 18, 16, 14, 16, 12, 10, 22, 22, 16]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64 + i) if i <= 26 else "A"].width = w
+    widths = [6, 16, 18, 16, 14, 16, 12, 10, 22, 22, 16, 22]
+    for i, w in enumerate(widths[:len(headers)], start=1):
+        col_letter = chr(64 + i) if i <= 26 else "A"
+        ws.column_dimensions[col_letter].width = w
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -494,11 +552,13 @@ def verify_otp():
         )
         is_new_device = cur.fetchone() is None
 
+        approx_location = get_approx_location(get_client_ip())
+
         cur.execute(
             "INSERT INTO login_activity (user_id, username, device_name, device_model, device_type, "
-            "operating_system, app_version, login_status, login_time, is_active) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', %s, 1) RETURNING id",
-            (user_id, username, device_name, device_model, device_type, operating_system, app_version, now_str())
+            "operating_system, app_version, login_status, login_time, is_active, approx_location) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', %s, 1, %s) RETURNING id",
+            (user_id, username, device_name, device_model, device_type, operating_system, app_version, now_str(), approx_location)
         )
         log_id = cur.fetchone()["id"]
 
@@ -783,6 +843,14 @@ def admin_toggle_user(user_id):
     return jsonify({"message": "Updated", "is_active": bool(new_status)})
 
 
+def strip_location(rows):
+    """Removes approx_location before returning data to admin views — a user's
+    approximate login location is visible only to that user themselves."""
+    for r in rows:
+        r.pop("approx_location", None)
+    return rows
+
+
 @app.route("/api/admin/activity", methods=["GET"])
 @require_auth(admin_only=True)
 def admin_activity():
@@ -792,6 +860,7 @@ def admin_activity():
     cur.execute("SELECT * FROM login_activity ORDER BY id DESC LIMIT 500")
     rows = [with_duration(r) for r in cur.fetchall()]
     rows = filter_by_days(rows, days)
+    rows = strip_location(rows)
     return jsonify({"activity": rows})
 
 
@@ -804,6 +873,7 @@ def export_admin_activity():
     cur.execute("SELECT * FROM login_activity ORDER BY id DESC LIMIT 10000")
     rows = [with_duration(r) for r in cur.fetchall()]
     rows = filter_by_days(rows, days)
+    rows = strip_location(rows)
 
     buffer = build_activity_excel(rows, sheet_title="All Users Activity")
     return send_file(
@@ -812,6 +882,7 @@ def export_admin_activity():
         download_name="securetrace_all_users_activity.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
 
 @app.route("/api/admin/analytics", methods=["GET"])
