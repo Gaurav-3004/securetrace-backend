@@ -390,24 +390,18 @@ def register():
     if cur.fetchone():
         return jsonify({"error": "Username already taken"}), 409
 
-    otp = generate_otp()
-    expires_at = (datetime.utcnow() + timedelta(minutes=OTP_VALID_MINUTES)).isoformat()
-    payload = f"{username}||{email}||{password}"
-
-    cur.execute("DELETE FROM otp_codes WHERE email = %s AND purpose = 'register'", (email,))
+    salt = generate_salt()
     cur.execute(
-        "INSERT INTO otp_codes (email, code, purpose, payload, expires_at) VALUES (%s, %s, 'register', %s, %s)",
-        (email, otp, payload, expires_at)
+        "INSERT INTO users (username, email, password_hash, salt, is_admin, is_active, created_at) "
+        "VALUES (%s, %s, %s, %s, 0, 1, %s)",
+        (username, email, hash_password(password, salt), salt, now_str())
     )
     db.commit()
 
-    sent = send_email(email, "Your SecureTrace verification code",
-                       f"Your SecureTrace verification code is: {otp}\n\nThis code expires in {OTP_VALID_MINUTES} minutes.")
-
-    return jsonify({"message": "OTP sent", "email_sent": sent})
+    return jsonify({"message": "Account created successfully"})
 
 
-# ---------------- Auth: Login (step 1 — password check, sends OTP) ----------------
+# ---------------- Auth: Login (direct — validates credentials and returns a token) ----------------
 
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -460,29 +454,42 @@ def login():
 
         return jsonify({"error": "Invalid username or password"}), 401
 
-    # Password correct — issue OTP, defer session/activity logging to verify step
-    otp = generate_otp()
-    expires_at = (datetime.utcnow() + timedelta(minutes=OTP_VALID_MINUTES)).isoformat()
-    payload = (
-        f"{user['id']}||{username}||{user['is_admin']}||{device_name}||{device_model}||"
-        f"{device_type}||{operating_system}||{app_version}||{user['failed_attempts']}"
-    )
+    # Password correct — complete login directly (no OTP step)
+    prev_failed = user["failed_attempts"]
+    cur.execute("UPDATE users SET failed_attempts = 0 WHERE id = %s", (user["id"],))
 
-    cur.execute("DELETE FROM otp_codes WHERE email = %s AND purpose = 'login'", (user["email"],))
+    if prev_failed >= 3:
+        create_alert(cur, user["id"], "UNUSUAL_PATTERN",
+                     f"Successful login after {prev_failed} failed attempts. If this wasn't you, change your password.")
+
     cur.execute(
-        "INSERT INTO otp_codes (email, code, purpose, payload, expires_at) VALUES (%s, %s, 'login', %s, %s)",
-        (user["email"], otp, payload, expires_at)
+        "SELECT id FROM login_activity WHERE user_id = %s AND device_name = %s AND device_model = %s "
+        "AND login_status = 'SUCCESS' LIMIT 1",
+        (user["id"], device_name, device_model)
     )
+    is_new_device = cur.fetchone() is None
+
+    approx_location = get_approx_location(get_client_ip())
+
+    cur.execute(
+        "INSERT INTO login_activity (user_id, username, device_name, device_model, device_type, "
+        "operating_system, app_version, login_status, login_time, is_active, approx_location) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', %s, 1, %s) RETURNING id",
+        (user["id"], username, device_name, device_model, device_type, operating_system, app_version, now_str(), approx_location)
+    )
+    log_id = cur.fetchone()["id"]
+
+    if is_new_device:
+        create_alert(cur, user["id"], "NEW_DEVICE", f"New sign-in detected from {device_name} ({operating_system}).")
+
     db.commit()
 
-    sent = send_email(user["email"], "Your SecureTrace login code",
-                       f"Your SecureTrace login code is: {otp}\n\nThis code expires in {OTP_VALID_MINUTES} minutes.")
-
+    token = create_token(user["id"], username, bool(user["is_admin"]))
     return jsonify({
-        "message": "OTP sent",
-        "email_sent": sent,
-        "masked_email": mask_email(user["email"]),
-        "email": user["email"]
+        "message": "Login successful",
+        "token": token,
+        "user": {"id": user["id"], "username": username, "is_admin": bool(user["is_admin"])},
+        "log_id": log_id
     })
 
 
