@@ -2,11 +2,7 @@ import io
 import os
 import hashlib
 import secrets
-import smtplib
-import random
-import string
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
 from functools import wraps
 
 import jwt
@@ -23,11 +19,7 @@ app = Flask(__name__)
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-this-secret-in-production")
 JWT_EXPIRY_DAYS = 7
 
-GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
-
 FAILED_ATTEMPT_THRESHOLD = 5
-OTP_VALID_MINUTES = 5
 
 # Postgres connection string, e.g. postgresql://user:pass@host/dbname
 # Get this from Neon.tech (or Render Postgres, Supabase, etc.) and set it as
@@ -121,17 +113,6 @@ def init_db():
         )
     """)
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS otp_codes (
-            id SERIAL PRIMARY KEY,
-            email TEXT,
-            code TEXT,
-            purpose TEXT,
-            payload TEXT,
-            expires_at TEXT
-        )
-    """)
-
     # Seed default admin: admin / admin123
     c.execute("SELECT id FROM users WHERE username = 'admin'")
     if c.fetchone() is None:
@@ -143,7 +124,7 @@ def init_db():
         )
     else:
         # One-time fix: if the admin account was already created with the old
-        # placeholder email (which can never receive OTPs), correct it now.
+        # placeholder email, correct it now.
         c.execute(
             "UPDATE users SET email = %s WHERE username = 'admin' AND email = %s",
             ("baviskarg604@gmail.com", "admin@securetrace.app")
@@ -165,30 +146,6 @@ def generate_salt():
 
 def hash_password(password, salt):
     return hashlib.sha256((salt + password).encode()).hexdigest()
-
-
-def generate_otp():
-    return "".join(random.choices(string.digits, k=6))
-
-
-def send_email(to_email, subject, body):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        print(f"[EMAIL NOT CONFIGURED] Would send to {to_email}: {body}")
-        return False
-    try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = GMAIL_ADDRESS
-        msg["To"] = to_email
-
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
-        return True
-    except Exception as e:
-        print(f"[EMAIL ERROR] {e}")
-        return False
 
 
 def create_token(user_id, username, is_admin):
@@ -454,7 +411,7 @@ def login():
 
         return jsonify({"error": "Invalid username or password"}), 401
 
-    # Password correct — complete login directly (no OTP step)
+    # Password correct — complete login directly
     prev_failed = user["failed_attempts"]
     cur.execute("UPDATE users SET failed_attempts = 0 WHERE id = %s", (user["id"],))
 
@@ -491,126 +448,6 @@ def login():
         "user": {"id": user["id"], "username": username, "is_admin": bool(user["is_admin"])},
         "log_id": log_id
     })
-
-
-# ---------------- Auth: Verify OTP (completes register OR login) ----------------
-
-@app.route("/api/verify-otp", methods=["POST"])
-def verify_otp():
-    data = request.get_json(force=True)
-    email = (data.get("email") or "").strip()
-    code = (data.get("otp") or "").strip()
-    purpose = (data.get("purpose") or "").strip()
-
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "SELECT * FROM otp_codes WHERE email = %s AND purpose = %s ORDER BY id DESC LIMIT 1",
-        (email, purpose)
-    )
-    row = cur.fetchone()
-
-    if row is None:
-        return jsonify({"error": "No OTP request found. Please try again."}), 400
-
-    if datetime.utcnow() > datetime.fromisoformat(row["expires_at"]):
-        cur.execute("DELETE FROM otp_codes WHERE id = %s", (row["id"],))
-        db.commit()
-        return jsonify({"error": "Code expired. Please request a new one."}), 400
-
-    if row["code"] != code:
-        return jsonify({"error": "Incorrect code"}), 400
-
-    cur.execute("DELETE FROM otp_codes WHERE id = %s", (row["id"],))
-
-    if purpose == "register":
-        username, reg_email, password = row["payload"].split("||")
-        cur.execute("SELECT id FROM users WHERE username = %s", (username,))
-        if cur.fetchone():
-            db.commit()
-            return jsonify({"error": "That username was just taken. Please try again."}), 409
-
-        salt = generate_salt()
-        cur.execute(
-            "INSERT INTO users (username, email, password_hash, salt, is_admin, is_active, created_at) "
-            "VALUES (%s, %s, %s, %s, 0, 1, %s)",
-            (username, reg_email, hash_password(password, salt), salt, now_str())
-        )
-        db.commit()
-        return jsonify({"message": "Account created successfully"})
-
-    elif purpose == "login":
-        parts = row["payload"].split("||")
-        user_id, username, is_admin, device_name, device_model, device_type, operating_system, app_version, prev_failed = parts
-        user_id = int(user_id)
-        is_admin = int(is_admin)
-        prev_failed = int(prev_failed)
-
-        cur.execute("UPDATE users SET failed_attempts = 0 WHERE id = %s", (user_id,))
-
-        if prev_failed >= 3:
-            create_alert(cur, user_id, "UNUSUAL_PATTERN",
-                         f"Successful login after {prev_failed} failed attempts. If this wasn't you, change your password.")
-
-        cur.execute(
-            "SELECT id FROM login_activity WHERE user_id = %s AND device_name = %s AND device_model = %s "
-            "AND login_status = 'SUCCESS' LIMIT 1",
-            (user_id, device_name, device_model)
-        )
-        is_new_device = cur.fetchone() is None
-
-        approx_location = get_approx_location(get_client_ip())
-
-        cur.execute(
-            "INSERT INTO login_activity (user_id, username, device_name, device_model, device_type, "
-            "operating_system, app_version, login_status, login_time, is_active, approx_location) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', %s, 1, %s) RETURNING id",
-            (user_id, username, device_name, device_model, device_type, operating_system, app_version, now_str(), approx_location)
-        )
-        log_id = cur.fetchone()["id"]
-
-        if is_new_device:
-            create_alert(cur, user_id, "NEW_DEVICE", f"New sign-in detected from {device_name} ({operating_system}).")
-
-        db.commit()
-
-        token = create_token(user_id, username, bool(is_admin))
-        return jsonify({
-            "message": "Login successful",
-            "token": token,
-            "user": {"id": user_id, "username": username, "is_admin": bool(is_admin)},
-            "log_id": log_id
-        })
-
-    else:
-        db.commit()
-        return jsonify({"error": "Unknown OTP purpose"}), 400
-
-
-@app.route("/api/resend-otp", methods=["POST"])
-def resend_otp():
-    data = request.get_json(force=True)
-    email = (data.get("email") or "").strip()
-    purpose = (data.get("purpose") or "").strip()
-
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "SELECT * FROM otp_codes WHERE email = %s AND purpose = %s ORDER BY id DESC LIMIT 1",
-        (email, purpose)
-    )
-    row = cur.fetchone()
-    if row is None:
-        return jsonify({"error": "No pending request to resend"}), 400
-
-    otp = generate_otp()
-    expires_at = (datetime.utcnow() + timedelta(minutes=OTP_VALID_MINUTES)).isoformat()
-    cur.execute("UPDATE otp_codes SET code = %s, expires_at = %s WHERE id = %s", (otp, expires_at, row["id"]))
-    db.commit()
-
-    sent = send_email(email, "Your SecureTrace verification code",
-                       f"Your SecureTrace verification code is: {otp}\n\nThis code expires in {OTP_VALID_MINUTES} minutes.")
-    return jsonify({"message": "OTP resent", "email_sent": sent})
 
 
 # ---------------- Password reset / change ----------------
