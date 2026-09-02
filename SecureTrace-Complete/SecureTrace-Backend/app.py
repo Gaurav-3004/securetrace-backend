@@ -120,7 +120,14 @@ def init_db():
         c.execute(
             "INSERT INTO users (username, email, password_hash, salt, is_admin, is_active, created_at) "
             "VALUES (%s, %s, %s, %s, 1, 1, %s)",
-            ("admin", "admin@example.com", hash_password("admin123", salt), salt, now_str())
+            ("admin", "baviskarg604@gmail.com", hash_password("admin123", salt), salt, now_str())
+        )
+    else:
+        # One-time fix: if the admin account was already created with the old
+        # placeholder email, correct it now.
+        c.execute(
+            "UPDATE users SET email = %s WHERE username = 'admin' AND email = %s",
+            ("baviskarg604@gmail.com", "admin@securetrace.app")
         )
 
     conn.commit()
@@ -404,7 +411,7 @@ def login():
 
         return jsonify({"error": "Invalid username or password"}), 401
 
-    # Password correct — complete login directly (no OTP step)
+    # Password correct — complete login directly
     prev_failed = user["failed_attempts"]
     cur.execute("UPDATE users SET failed_attempts = 0 WHERE id = %s", (user["id"],))
 
@@ -680,6 +687,14 @@ def admin_toggle_user(user_id):
     return jsonify({"message": "Updated", "is_active": bool(new_status)})
 
 
+def strip_location(rows):
+    """Removes approx_location before returning data to admin views — a user's
+    approximate login location is visible only to that user themselves."""
+    for r in rows:
+        r.pop("approx_location", None)
+    return rows
+
+
 @app.route("/api/admin/activity", methods=["GET"])
 @require_auth(admin_only=True)
 def admin_activity():
@@ -689,6 +704,7 @@ def admin_activity():
     cur.execute("SELECT * FROM login_activity ORDER BY id DESC LIMIT 500")
     rows = [with_duration(r) for r in cur.fetchall()]
     rows = filter_by_days(rows, days)
+    rows = strip_location(rows)
     return jsonify({"activity": rows})
 
 
@@ -701,6 +717,7 @@ def export_admin_activity():
     cur.execute("SELECT * FROM login_activity ORDER BY id DESC LIMIT 10000")
     rows = [with_duration(r) for r in cur.fetchall()]
     rows = filter_by_days(rows, days)
+    rows = strip_location(rows)
 
     buffer = build_activity_excel(rows, sheet_title="All Users Activity")
     return send_file(
